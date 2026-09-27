@@ -1,5 +1,5 @@
 -- SIX-DIRECTION PRC VERSION: Forward, Back, Left, Right, Up, Down.
--- Layout v5: matching vertical arrowheads, dashed Up/Down shafts, L/R letters.
+-- Version 7: persistent timing editor and inset Up/Down arrowheads.
 -- Touchscreen movement controls for ComputerCraft on Minecraft 1.6.4.
 -- Run: rig_control.lua [monitor side or wired peripheral name]
 -- This complete program can also be saved as /startup.
@@ -10,14 +10,16 @@
 
 local args = { ... }
 local OUTPUT_SIDE = "back" -- The one computer face wired to the PRC.
-local PULSE_TIME = 0.5
+local pulseLength = 0.5
 local CONFIG_WIDTH = 15 -- One standalone monitor at text scale 0.5.
-local CONFIG_FLASH_TIME = 0.25
 local STATE_VERSION = "rig-control-prc-v1"
+local SETTINGS_VERSION = "rig-control-settings-v1"
 local BASE_WIDTH, BASE_HEIGHT = 56, 38
 local commands = { front = 1, back = 2, left = 3, right = 4, up = 5, down = 6 }
 -- Absolute path so recovery also works when this program is named startup.
 local STATE_FILE = "/rig_control.state"
+-- Timing preferences survive Ctrl+T as well as movement reboots.
+local SETTINGS_FILE = "/rig_control.settings"
 local delays = { front = 6, back = 6, left = 2, right = 2, up = 3, down = 3 }
 -- These delays are OFF time after each pulse in Auto mode.
 local sides = { "front", "back", "left", "right", "top", "bottom" }
@@ -30,7 +32,20 @@ local buttons, lockButton, configButton = {}, nil, nil
 local layoutOK = false
 local locked, active, pulseSide = false, nil, nil
 local offTimer, repeatTimer = nil, nil
-local configTimer = nil
+local screen = "main"
+local draft, focusedField, replaceValue = nil, 1, true
+local configMessage, invalidField = nil, nil
+local inputBoxes, keypadButtons = {}, {}
+local cancelButton, saveButton
+local timingFields = {
+    { key="pulse", label="Pulse Length", minimum=0.05 },
+    { key="up", label="Up Delay", minimum=0 },
+    { key="down", label="Down Delay", minimum=0 },
+    { key="left", label="Left Delay", minimum=0 },
+    { key="right", label="Right Delay", minimum=0 },
+    { key="front", label="Forward Delay", minimum=0 },
+    { key="back", label="Back Delay", minimum=0 }
+}
 local letterShapes = {
     L = { "#    ", "#    ", "#    ", "#    ", "#    ", "#    ", "#####" },
     R = { "#### ", "#   #", "#   #", "#### ", "# #  ", "#  # ", "#   #" }
@@ -47,6 +62,94 @@ local function stopMotion()
     offTimer, repeatTimer = nil, nil
     active, pulseSide = nil, nil
     outputsOff()
+end
+
+local function secondsText(value)
+    local text = string.format("%.2f", value)
+    return (text:gsub("0+$", ""):gsub("%.$", ""))
+end
+
+local function parseSeconds(text, field)
+    if type(text) ~= "string" or not text:match("^%d*%.?%d*$") then
+        return nil, "Enter a number for " .. field.label .. "."
+    end
+    local value = tonumber(text)
+    if not value or value ~= value or value < field.minimum or value > 9999.99 then
+        return nil, field.label .. ": " .. secondsText(field.minimum) ..
+                    " to 9999.99 sec."
+    end
+    local decimals = text:match("%.(%d*)$")
+    if decimals and #decimals > 2 then
+        return nil, "Use up to 2 decimal places."
+    end
+    return value
+end
+
+local function applySettings(values)
+    pulseLength = values.pulse
+    for direction in pairs(delays) do delays[direction] = values[direction] end
+end
+
+local function loadSettings()
+    local path = SETTINGS_FILE
+    if not fs.exists(path) then
+        -- An interrupted replacement may leave the previous file here.
+        path = SETTINGS_FILE .. ".bak"
+        if not fs.exists(path) then return end
+    end
+    local file = fs.open(path, "r")
+    if not file then error("Cannot read timing settings: " .. path, 0) end
+    local values = {}
+    local valid = file.readLine() == SETTINGS_VERSION
+    for _, field in ipairs(timingFields) do
+        local line = file.readLine() or ""
+        local prefix = field.key .. "="
+        if line:sub(1, #prefix) ~= prefix then
+            valid = false
+        else
+            values[field.key] = parseSeconds(line:sub(#prefix + 1), field)
+            if values[field.key] == nil then valid = false end
+        end
+    end
+    if file.readLine() ~= nil then valid = false end
+    file.close()
+    if not valid then error("Invalid timing settings: " .. path, 0) end
+    if path ~= SETTINGS_FILE then fs.move(path, SETTINGS_FILE) end
+    applySettings(values)
+end
+
+local function saveSettings(values)
+    local temporary, backup = SETTINGS_FILE .. ".tmp", SETTINGS_FILE .. ".bak"
+    local file
+    local ok, message = pcall(function()
+        file = fs.open(temporary, "w")
+        if not file then error("Cannot write timing settings.", 0) end
+        file.writeLine(SETTINGS_VERSION)
+        for _, field in ipairs(timingFields) do
+            file.writeLine(field.key .. "=" .. secondsText(values[field.key]))
+        end
+        file.close()
+        file = nil
+        -- Keep the old settings until the complete replacement is in place.
+        if not fs.exists(SETTINGS_FILE) and fs.exists(backup) then
+            fs.move(backup, SETTINGS_FILE)
+        end
+        if fs.exists(backup) then fs.delete(backup) end
+        if fs.exists(SETTINGS_FILE) then fs.move(SETTINGS_FILE, backup) end
+        fs.move(temporary, SETTINGS_FILE)
+    end)
+    if file then pcall(file.close) end
+    if not ok then
+        pcall(function()
+            if not fs.exists(SETTINGS_FILE) and fs.exists(backup) then
+                fs.move(backup, SETTINGS_FILE)
+            end
+        end)
+        return false, message
+    end
+    -- Cleanup failure does not invalidate an already committed settings file.
+    pcall(function() if fs.exists(backup) then fs.delete(backup) end end)
+    return true
 end
 
 local function saveState()
@@ -161,7 +264,7 @@ local function updateLayout()
     -- Shared rows: Up/Forward, Left/Right, and Back/Down.
     buttons = {
         { side="up", label="Up", dx=-stepX, dy=-stepY,
-          arrow="up", dashedShaft=true },
+          arrow="up", headOnly=true, arrowOffsetY=1 },
         { side="front", label="Forward", dx=0, dy=-stepY,
           arrow="up" },
         { side="left", label="Left", dx=-stepX, dy=0,
@@ -171,13 +274,44 @@ local function updateLayout()
         { side="back", label="Back", dx=0, dy=stepY,
           arrow="down", labelTop=true },
         { side="down", label="Down", dx=stepX, dy=stepY,
-          arrow="down", labelTop=true, dashedShaft=true }
+          arrow="down", labelTop=true, headOnly=true, arrowOffsetY=-1 }
     }
     for _, button in ipairs(buttons) do
         button.x, button.y = originX + button.dx, middleY + button.dy
         button.w, button.h = buttonWidth, buttonHeight
         button.delayRow = button.y + buttonHeight + labelGap
     end
+
+    local fieldWidth = math.floor(12 * guiScale)
+    local keyWidth = math.floor(5 * guiScale)
+    local keyGap = math.max(1, math.floor(guiScale))
+    local padWidth = 3 * keyWidth + 2 * keyGap
+    local formWidth = 15 + fieldWidth + 4
+    local columnGap = math.max(3, math.floor(4 * guiScale))
+    local leftX = math.floor((width - formWidth - columnGap - padWidth) / 2) + 1
+    local firstY = lockButton.y + modeHeight + 2
+    local rowStep = modeHeight + 1
+    inputBoxes, keypadButtons = {}, {}
+    for i, field in ipairs(timingFields) do
+        inputBoxes[i] = {
+            x=leftX + 15, y=firstY + (i - 1) * rowStep,
+            w=fieldWidth, h=modeHeight, labelX=leftX
+        }
+    end
+    local padX = leftX + formWidth + columnGap
+    local keyLabels = { "7", "8", "9", "4", "5", "6", "1", "2", "3", ".", "0", "<-" }
+    for i, label in ipairs(keyLabels) do
+        keypadButtons[i] = {
+            x=padX + ((i - 1) % 3) * (keyWidth + keyGap),
+            y=firstY + math.floor((i - 1) / 3) * rowStep,
+            w=keyWidth, h=modeHeight, label=label
+        }
+    end
+    keypadButtons[#keypadButtons + 1] = {
+        x=padX, y=firstY + 4 * rowStep, w=padWidth, h=modeHeight, label="Clear"
+    }
+    cancelButton = { x=1, y=height-modeHeight+1, w=CONFIG_WIDTH, h=modeHeight }
+    saveButton = { x=width-CONFIG_WIDTH+1, y=cancelButton.y, w=CONFIG_WIDTH, h=modeHeight }
 end
 
 local function fitMonitor()
@@ -205,7 +339,7 @@ local function centered(y, text, foreground)
             text, foreground, C.black)
 end
 
-local function drawArrow(x, y, w, h, direction, color, background, dashedShaft)
+local function drawArrow(x, y, w, h, direction, color, headOnly)
     -- Draw mirrored spans instead of rounding polygon edges independently.
     -- Even widths have a two-cell tip; odd widths have a one-cell tip.
     local vertical = direction == "up" or direction == "down"
@@ -215,7 +349,9 @@ local function drawArrow(x, y, w, h, direction, color, background, dashedShaft)
     local pairs = (thickness - tipWidth) / 2
     local shaftPairs = math.floor(pairs / 3)
     local headLength = math.max(2, math.ceil(length * 0.55))
-    for row = 0, length - 1 do
+    -- Keep the shared head geometry, omitting the shaft for Up and Down.
+    local lastRow = headOnly and headLength - 1 or length - 1
+    for row = 0, lastRow do
         local halfSpan = shaftPairs
         if row < headLength then
             halfSpan = math.floor(pairs * row / (headLength - 1) + 0.5)
@@ -226,11 +362,7 @@ local function drawArrow(x, y, w, h, direction, color, background, dashedShaft)
         if direction == "down" or direction == "right" then
             along = length - row - 1
         end
-        if vertical and dashedShaft and row >= headLength then
-            -- Replace the entire shaft with hyphens. The head above uses
-            -- exactly the same geometry as the Forward/Back arrowhead.
-            writeAt(x + inset, y + along, string.rep("-", span), color, background)
-        elseif vertical then
+        if vertical then
             fill(x + inset, y + along, span, 1, color)
         else
             fill(x + along, y + inset, 1, span, color)
@@ -269,6 +401,39 @@ local function drawBigLetter(button, color)
     end
 end
 
+local function drawFlatButton(button, label, foreground, background)
+    fill(button.x, button.y, button.w, button.h, background)
+    buttonText(button, button.y + math.floor(button.h / 2), label, foreground, background)
+end
+
+local function drawConfig()
+    drawFlatButton(lockButton, "Config", C.black, C.yellow)
+    for i, field in ipairs(timingFields) do
+        local box = inputBoxes[i]
+        local y = box.y + math.floor(box.h / 2)
+        local focused = i == focusedField
+        local border = focused and C.cyan or C.gray
+        if invalidField == i then border = C.red end
+        writeAt(box.labelX, y, field.label .. ":", C.white, C.black)
+        fill(box.x, box.y, box.w, box.h, border)
+        fill(box.x + 1, box.y + 1, box.w - 2, box.h - 2, C.white)
+        local text = draft[field.key]
+        writeAt(box.x + 1, y, text, C.black,
+                focused and replaceValue and C.lightBlue or C.white)
+        if focused and not replaceValue and #text < box.w - 2 then
+            writeAt(box.x + 1 + #text, y, "_", C.gray, C.white)
+        end
+        writeAt(box.x + box.w + 1, y, "sec", C.lightGray, C.black)
+    end
+    for _, button in ipairs(keypadButtons) do
+        drawFlatButton(button, button.label, C.black, C.lightBlue)
+    end
+    if configMessage then centered(cancelButton.y - 3, configMessage, C.red) end
+    centered(cancelButton.y - 2, "Tap a field; use the number pad to edit.", C.lightGray)
+    drawFlatButton(cancelButton, "Cancel", C.white, C.gray)
+    drawFlatButton(saveButton, "Save", C.black, C.lime)
+end
+
 local function draw()
     monitor.setBackgroundColor(C.black)
     monitor.setTextColor(C.white)
@@ -279,15 +444,20 @@ local function draw()
         if height >= 5 then centered(5, "Outputs are off", C.lightGray) end
         return
     end
+    if screen == "config" then
+        drawConfig()
+        return
+    end
 
     local lockColor = locked and C.lime or C.cyan
     fill(lockButton.x, lockButton.y, lockButton.w, lockButton.h, lockColor)
     buttonText(lockButton, lockButton.y + math.floor(lockButton.h / 2),
                locked and "Auto" or "Manual", C.black, lockColor)
-    local configColor = configTimer and C.white or C.yellow
+    local configDisabled = locked or pulseSide ~= nil
+    local configColor = configDisabled and C.gray or C.yellow
     fill(configButton.x, configButton.y, configButton.w, configButton.h, configColor)
     buttonText(configButton, configButton.y + math.floor(configButton.h / 2),
-               "Config", C.black, configColor)
+               "Config", configDisabled and C.lightGray or C.black, configColor)
 
     for _, button in ipairs(buttons) do
         local selected = active == button.side
@@ -314,10 +484,11 @@ local function draw()
             local iconH = iconBottom - iconTop + 1
             local iconW = math.min(button.w - 4, math.max(5, math.floor(iconH * 1.4)))
             if (button.w - iconW) % 2 ~= 0 then iconW = iconW - 1 end
-            drawArrow(button.x + (button.w - iconW) / 2, iconTop,
-                      iconW, iconH, button.arrow, edge, background, button.dashedShaft)
+            drawArrow(button.x + (button.w - iconW) / 2,
+                      iconTop + (button.arrowOffsetY or 0),
+                      iconW, iconH, button.arrow, edge, button.headOnly)
         end
-        buttonText(button, button.delayRow, delays[button.side] .. " sec",
+        buttonText(button, button.delayRow, secondsText(delays[button.side]) .. " sec",
                    delayColor, C.black)
     end
 end
@@ -326,7 +497,7 @@ local function startPulse(side)
     outputsOff()
     pulseSide = side
     redstone.setAnalogOutput(OUTPUT_SIDE, commands[side])
-    offTimer = os.startTimer(PULSE_TIME)
+    offTimer = os.startTimer(pulseLength)
 end
 
 local function inside(x, y, box)
@@ -334,12 +505,110 @@ local function inside(x, y, box)
            y >= box.y and y < box.y + box.h
 end
 
+local function focusField(index)
+    focusedField = (index - 1) % #timingFields + 1
+    replaceValue = true
+    configMessage, invalidField = nil, nil
+end
+
+local function openConfig()
+    -- Do not shorten an in-progress Manual pulse to open the editor.
+    if locked or pulseSide then return end
+    stopMotion()
+    draft = { pulse=secondsText(pulseLength) }
+    for direction, value in pairs(delays) do draft[direction] = secondsText(value) end
+    focusField(1)
+    screen = "config"
+    draw()
+end
+
+local function closeConfig()
+    screen, draft = "main", nil
+    configMessage, invalidField = nil, nil
+    draw()
+end
+
+local function editValue(input)
+    local field = timingFields[focusedField]
+    local text = draft[field.key]
+    configMessage, invalidField = nil, nil
+    if input == "Clear" then
+        text = ""
+    elseif input == "<-" then
+        text = replaceValue and "" or text:sub(1, -2)
+    elseif input:match("^%d$") or input == "." then
+        if replaceValue then text = "" end
+        if input == "." and text:find(".", 1, true) then return end
+        if input == "." and text == "" then text = "0" end
+        local newText = text .. input
+        local decimals = newText:match("%.(%d*)$")
+        if #newText > 7 or (decimals and #decimals > 2) then
+            configMessage = "Max 9999.99 seconds; up to 2 decimal places."
+            draw()
+            return
+        end
+        text = newText
+    else
+        return
+    end
+    draft[field.key], replaceValue = text, false
+    draw()
+end
+
+local function saveDraft()
+    local values = {}
+    for i, field in ipairs(timingFields) do
+        local value, message = parseSeconds(draft[field.key], field)
+        if value == nil then
+            focusField(i)
+            configMessage, invalidField = message, i
+            draw()
+            return
+        end
+        values[field.key] = value
+    end
+    local ok, message = saveSettings(values)
+    if not ok then
+        configMessage = "Save failed. Changes have not been applied."
+        print("Cannot save timing settings: " .. tostring(message))
+        draw()
+        return
+    end
+    applySettings(values)
+    closeConfig()
+end
+
+local function handleConfigTouch(x, y)
+    if inside(x, y, cancelButton) then closeConfig(); return end
+    if inside(x, y, saveButton) then saveDraft(); return end
+    for i, box in ipairs(inputBoxes) do
+        if inside(x, y, box) then focusField(i); draw(); return end
+    end
+    for _, button in ipairs(keypadButtons) do
+        if inside(x, y, button) then editValue(button.label); return end
+    end
+end
+
+local function handleConfigKey(key)
+    if key == keys.backspace then
+        editValue("<-")
+    elseif key == keys.delete then
+        editValue("Clear")
+    elseif key == keys.tab or key == keys.enter or key == keys.down then
+        focusField(focusedField + 1)
+        draw()
+    elseif key == keys.up then
+        focusField(focusedField - 1)
+        draw()
+    end
+end
+
 local function handleTouch(x, y)
     if not layoutOK then return end
+    if screen == "config" then handleConfigTouch(x, y); return end
     if inside(x, y, configButton) then
-        configTimer = os.startTimer(CONFIG_FLASH_TIME)
-        draw()
-        return -- Feedback only; timing settings will be added later.
+        openConfig()
+        return
     end
     if inside(x, y, lockButton) then
         stopMotion()
@@ -377,6 +646,7 @@ local function main()
         if side == OUTPUT_SIDE then validOutput = true end
     end
     if not validOutput then error("Invalid OUTPUT_SIDE setting.", 0) end
+    loadSettings()
     loadState()
     findMonitor()
     fitMonitor()
@@ -402,11 +672,12 @@ local function main()
             return
         elseif event == "monitor_touch" and a == monitorName then
             handleTouch(b, c)
+        elseif event == "char" and screen == "config" and layoutOK then
+            editValue(a)
+        elseif event == "key" and screen == "config" and layoutOK then
+            handleConfigKey(a)
         elseif event == "timer" then
-            if a == configTimer then
-                configTimer = nil
-                draw()
-            elseif a == offTimer then
+            if a == offTimer then
                 offTimer = nil
                 outputsOff()
                 pulseSide = nil
