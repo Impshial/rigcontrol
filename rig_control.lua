@@ -131,7 +131,7 @@ local function draw()
 
     local lockColor = locked and C.lime or C.gray
     fill(lockButton.x, lockButton.y, 15, 3, lockColor)
-    local label = locked and "Lock: ON" or "Lock: OFF"
+    local label = locked and "Auto" or "Manual"
     writeAt(lockButton.x + math.floor((15 - #label) / 2),
             lockButton.y + 1, label,
             locked and C.black or C.white, lockColor)
