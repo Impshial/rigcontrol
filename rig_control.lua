@@ -164,9 +164,9 @@ local function draw()
     centered(originY + 11, locked and "AUTO" or "MANUAL", C.lightGray)
     local state = pulseSide and "PULSE" or (active and "WAIT" or "READY")
     centered(originY + 13, state, active and C.lime or C.white)
-    local hint = "Click an arrow for one pulse"
+    local hint = ""
     if locked then
-        hint = active and "Tap active arrow to stop" or "Choose a direction"
+        hint = active and "" or ""
     end
     centered(originY + 23, hint, C.lightGray)
 end
