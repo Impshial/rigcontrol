@@ -1,5 +1,5 @@
 -- SIX-DIRECTION PRC VERSION: Forward, Back, Left, Right, Up, Down.
--- Layout v4: large U/D/L/R letters and a compact Config button with feedback.
+-- Layout v5: matching vertical arrowheads, dashed Up/Down shafts, L/R letters.
 -- Touchscreen movement controls for ComputerCraft on Minecraft 1.6.4.
 -- Run: rig_control.lua [monitor side or wired peripheral name]
 -- This complete program can also be saved as /startup.
@@ -32,8 +32,6 @@ local locked, active, pulseSide = false, nil, nil
 local offTimer, repeatTimer = nil, nil
 local configTimer = nil
 local letterShapes = {
-    U = { "#   #", "#   #", "#   #", "#   #", "#   #", "#   #", " ### " },
-    D = { "#### ", "#   #", "#   #", "#   #", "#   #", "#   #", "#### " },
     L = { "#    ", "#    ", "#    ", "#    ", "#    ", "#    ", "#####" },
     R = { "#### ", "#   #", "#   #", "#### ", "# #  ", "#  # ", "#   #" }
 }
@@ -163,7 +161,7 @@ local function updateLayout()
     -- Shared rows: Up/Forward, Left/Right, and Back/Down.
     buttons = {
         { side="up", label="Up", dx=-stepX, dy=-stepY,
-          letter="U" },
+          arrow="up", dashedShaft=true },
         { side="front", label="Forward", dx=0, dy=-stepY,
           arrow="up" },
         { side="left", label="Left", dx=-stepX, dy=0,
@@ -173,7 +171,7 @@ local function updateLayout()
         { side="back", label="Back", dx=0, dy=stepY,
           arrow="down", labelTop=true },
         { side="down", label="Down", dx=stepX, dy=stepY,
-          letter="D" }
+          arrow="down", labelTop=true, dashedShaft=true }
     }
     for _, button in ipairs(buttons) do
         button.x, button.y = originX + button.dx, middleY + button.dy
@@ -207,7 +205,7 @@ local function centered(y, text, foreground)
             text, foreground, C.black)
 end
 
-local function drawArrow(x, y, w, h, direction, color)
+local function drawArrow(x, y, w, h, direction, color, background, dashedShaft)
     -- Draw mirrored spans instead of rounding polygon edges independently.
     -- Even widths have a two-cell tip; odd widths have a one-cell tip.
     local vertical = direction == "up" or direction == "down"
@@ -228,7 +226,11 @@ local function drawArrow(x, y, w, h, direction, color)
         if direction == "down" or direction == "right" then
             along = length - row - 1
         end
-        if vertical then
+        if vertical and dashedShaft and row >= headLength then
+            -- Replace the entire shaft with hyphens. The head above uses
+            -- exactly the same geometry as the Forward/Back arrowhead.
+            writeAt(x + inset, y + along, string.rep("-", span), color, background)
+        elseif vertical then
             fill(x + inset, y + along, span, 1, color)
         else
             fill(x + along, y + inset, 1, span, color)
@@ -313,7 +315,7 @@ local function draw()
             local iconW = math.min(button.w - 4, math.max(5, math.floor(iconH * 1.4)))
             if (button.w - iconW) % 2 ~= 0 then iconW = iconW - 1 end
             drawArrow(button.x + (button.w - iconW) / 2, iconTop,
-                      iconW, iconH, button.arrow, edge)
+                      iconW, iconH, button.arrow, edge, background, button.dashedShaft)
         end
         buttonText(button, button.delayRow, delays[button.side] .. " sec",
                    delayColor, C.black)
