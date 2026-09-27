@@ -1,18 +1,23 @@
+-- SIX-DIRECTION PRC VERSION: Forward, Back, Left, Right, Up, Down.
 -- Touchscreen movement controls for ComputerCraft on Minecraft 1.6.4.
 -- Run: rig_control.lua [monitor side or wired peripheral name]
 -- This complete program can also be saved as /startup.
--- Use a joined wall of Advanced Monitors, at least 2 blocks by 2 blocks.
--- Buttons and arrows expand to fit larger walls, including 3 by 3.
--- Directions refer to the computer's own faces. RedNet colour channels
--- are configured on the cables, not in this program.
+-- Designed for a 3 x 3 Advanced Monitor wall; also scales to 4 x 4.
+-- One analog output feeds an MFR Programmable RedNet Controller (PRC).
+-- Configure the PRC with six Equals circuits; see PRC_SETUP.md.
+-- Movement names refer to PRC commands, not the computer's physical faces.
 
 local args = { ... }
+local OUTPUT_SIDE = "back" -- The one computer face wired to the PRC.
 local PULSE_TIME = 0.5
+local STATE_VERSION = "rig-control-prc-v1"
+local BASE_WIDTH, BASE_HEIGHT = 41, 37
+local commands = { front = 1, back = 2, left = 3, right = 4, up = 5, down = 6 }
 -- Absolute path so recovery also works when this program is named startup.
 local STATE_FILE = "/rig_control.state"
-local delays = { front = 6, back = 6, left = 2, right = 2 }
--- These delays are OFF time after each pulse in Lock mode.
-local sides = { "front", "back", "left", "right" }
+local delays = { front = 6, back = 6, left = 2, right = 2, up = 3, down = 3 }
+-- These delays are OFF time after each pulse in Auto mode.
+local sides = { "front", "back", "left", "right", "top", "bottom" }
 local C = colors
 
 local monitor, monitorName
@@ -23,16 +28,9 @@ local layoutOK = false
 local locked, active, pulseSide = false, nil, nil
 local offTimer, repeatTimer = nil, nil
 
-local shapes = {
-    front = { "  #  ", " ### ", "#####", "  #  ", "  #  " },
-    back  = { "  #  ", "  #  ", "#####", " ### ", "  #  " },
-    left  = { "  #  ", " ##  ", "#####", " ##  ", "  #  " },
-    right = { "  #  ", "  ## ", "#####", "  ## ", "  #  " }
-}
-
 local function outputsOff()
     for _, side in ipairs(sides) do
-        redstone.setOutput(side, false)
+        redstone.setAnalogOutput(side, 0)
     end
 end
 
@@ -55,7 +53,8 @@ local function saveState()
     -- before powering an output, since that output can reboot the computer.
     local file = fs.open(temporary, "w")
     if not file then error("Cannot save Auto state. Movement stopped.", 0) end
-    file.writeLine("rig-control-v1")
+    file.writeLine(STATE_VERSION)
+    file.writeLine(OUTPUT_SIDE)
     file.writeLine(active or "idle")
     file.close()
     if fs.exists(STATE_FILE) then fs.delete(STATE_FILE) end
@@ -66,10 +65,17 @@ local function loadState()
     if not fs.exists(STATE_FILE) then return end
     local file = fs.open(STATE_FILE, "r")
     if not file then error("Cannot read saved Auto state.", 0) end
-    local version, direction = file.readLine(), file.readLine()
-    local extra = file.readLine()
+    local version, savedSide = file.readLine(), file.readLine()
+    local direction, extra = file.readLine(), file.readLine()
     file.close()
-    if version ~= "rig-control-v1" or extra ~= nil or
+    -- A first install or a changed output connection starts in Manual.
+    if version == "rig-control-v1" or
+       (version == STATE_VERSION and savedSide ~= OUTPUT_SIDE) then
+        saveState()
+        print("PRC connection changed. Starting in Manual.")
+        return
+    end
+    if version ~= STATE_VERSION or extra ~= nil or
        (direction ~= "idle" and delays[direction] == nil) then
         error("Invalid saved Auto state. Restart to use Manual.", 0)
     end
@@ -120,41 +126,43 @@ end
 
 local function updateLayout()
     width, height = monitor.getSize()
-    layoutOK = width >= 29 and height >= 24
+    layoutOK = width >= BASE_WIDTH and height >= BASE_HEIGHT
     buttons, lockButton = {}, nil
     if not layoutOK then return end
-    -- Scale the whole arrangement uniformly, with matching click areas.
-    guiScale = math.min(width / 29, height / 24)
-    originX = math.floor((width - math.floor(29 * guiScale)) / 2) + 1
-    originY = math.floor((height - math.floor(24 * guiScale)) / 2) + 1
+    guiScale = math.min(width / BASE_WIDTH, height / BASE_HEIGHT)
+    originX = math.floor((width - math.floor(BASE_WIDTH * guiScale)) / 2) + 1
+    originY = math.floor((height - math.floor(BASE_HEIGHT * guiScale)) / 2) + 1
     lockButton = {
-        x = guiX(7), y = guiY(0),
-        w = guiX(22) - guiX(7), h = guiY(3) - guiY(0)
+        x = guiX(10), y = guiY(0),
+        w = guiX(29) - guiX(10), h = guiY(3) - guiY(0)
     }
+    -- Reference layout: Up upper-left, Down lower-right, movement cross.
     buttons = {
-        { side = "front", gx = 10, gy = 4 },
-        { side = "left",  gx = 0,  gy = 10 },
-        { side = "right", gx = 20, gy = 10 },
-        { side = "back",  gx = 10, gy = 16 }
+        { side="up", label="Up", gx=2, gy=6, gw=11, gh=8, delayY=15,
+          arrow="up", bars=true },
+        { side="front", label="Forward", gx=14, gy=8, gw=11, gh=8, delayY=17,
+          arrow="up" },
+        { side="left", label="Left", gx=2, gy=16, gw=11, gh=7, delayY=24,
+          arrow="left" },
+        { side="right", label="Right", gx=26, gy=16, gw=12, gh=7, delayY=24,
+          arrow="right" },
+        { side="back", label="Back", gx=14, gy=24, gw=11, gh=9, delayY=34,
+          arrow="down", labelTop=true },
+        { side="down", label="Down", gx=28, gy=26, gw=11, gh=9, delayY=36,
+          arrow="down", labelTop=true, bars=true }
     }
     for _, button in ipairs(buttons) do
         button.x, button.y = guiX(button.gx), guiY(button.gy)
-        button.w = guiX(button.gx + 9) - button.x
-        button.h = guiY(button.gy + 6) - button.y
-        button.bodyH = guiY(button.gy + 5) - button.y
-        local labelTop = guiY(button.gy + 5)
-        button.labelY = labelTop +
-            math.floor((guiY(button.gy + 6) - labelTop - 1) / 2)
+        button.w = guiX(button.gx + button.gw) - button.x
+        button.h = guiY(button.gy + button.gh) - button.y
+        button.delayRow = guiY(button.delayY)
     end
 end
 
 local function fitMonitor()
-    -- Use only legacy monitor functions, with no modern drawing API.
-    for step = 10, 1, -1 do
-        monitor.setTextScale(step / 2)
-        updateLayout()
-        if layoutOK then return end
-    end
+    -- Keep the smallest legacy text scale for the most drawing detail.
+    monitor.setTextScale(0.5)
+    updateLayout()
 end
 
 local function writeAt(x, y, text, foreground, background)
@@ -176,65 +184,123 @@ local function centered(y, text, foreground)
             text, foreground, C.black)
 end
 
+local function drawLine(x1, y1, x2, y2, color)
+    local dx, dy = math.abs(x2 - x1), -math.abs(y2 - y1)
+    local sx, sy = x1 < x2 and 1 or -1, y1 < y2 and 1 or -1
+    local err = dx + dy
+    while true do
+        writeAt(x1, y1, " ", color, color)
+        if x1 == x2 and y1 == y2 then return end
+        local twice = 2 * err
+        if twice >= dy then err = err + dy; x1 = x1 + sx end
+        if twice <= dx then err = err + dx; y1 = y1 + sy end
+    end
+end
+
+local function drawArrow(x, y, w, h, direction, color)
+    -- Filled arrow with a broad head and a narrower shaft.
+    local outline = { {3,0}, {6,3}, {4,3}, {4,6}, {2,6}, {2,3}, {0,3} }
+    local points = {}
+    for _, point in ipairs(outline) do
+        local u, v = point[1], point[2]
+        if direction == "down" then v = 6 - v
+        elseif direction == "left" then u, v = v, u
+        elseif direction == "right" then u, v = 6 - v, u end
+        points[#points + 1] = {
+            x + math.floor(u * (w - 1) / 6 + 0.5),
+            y + math.floor(v * (h - 1) / 6 + 0.5)
+        }
+    end
+    -- Fill polygon scan lines, then draw the edge to include the tip.
+    for row = y, y + h - 1 do
+        local crossings = {}
+        for i, point in ipairs(points) do
+            local nextPoint = points[i % #points + 1]
+            if (point[2] <= row and nextPoint[2] > row) or
+               (nextPoint[2] <= row and point[2] > row) then
+                crossings[#crossings + 1] = point[1] +
+                    (row - point[2]) * (nextPoint[1] - point[1]) /
+                    (nextPoint[2] - point[2])
+            end
+        end
+        table.sort(crossings)
+        for i = 1, #crossings - 1, 2 do
+            local first, last = math.ceil(crossings[i]), math.floor(crossings[i + 1])
+            if last >= first then
+                writeAt(first, row, string.rep(" ", last - first + 1), color, color)
+            end
+        end
+    end
+    for i, point in ipairs(points) do
+        local nextPoint = points[i % #points + 1]
+        drawLine(point[1], point[2], nextPoint[1], nextPoint[2], color)
+    end
+end
+
+local function buttonText(button, y, text, foreground, background)
+    writeAt(button.x + math.floor((button.w - #text) / 2), y,
+            text, foreground, background)
+end
+
 local function draw()
     monitor.setBackgroundColor(C.black)
     monitor.setTextColor(C.white)
     monitor.clear()
     if not layoutOK then
         centered(1, "MONITOR TOO SMALL", C.red)
-        if height >= 3 then centered(3, "Use a 2 x 2 wall", C.white) end
+        if height >= 3 then centered(3, "Use a 3 x 3 wall", C.white) end
         if height >= 5 then centered(5, "Outputs are off", C.lightGray) end
         return
     end
 
-    local lockColor = locked and C.lime or C.gray
+    local lockColor = locked and C.lime or C.cyan
     fill(lockButton.x, lockButton.y, lockButton.w, lockButton.h, lockColor)
-    local label = locked and "Auto" or "Manual"
-    writeAt(lockButton.x + math.floor((lockButton.w - #label) / 2),
-            lockButton.y + math.floor(lockButton.h / 2), label,
-            locked and C.black or C.white, lockColor)
+    buttonText(lockButton, lockButton.y + math.floor(lockButton.h / 2),
+               locked and "Auto" or "Manual", C.black, lockColor)
 
     for _, button in ipairs(buttons) do
         local selected = active == button.side
         local disabled = locked and active and not selected
-        local background, arrow, labelColor = C.blue, C.white, C.white
+        local background, edge, labelColor = C.lightBlue, C.cyan, C.black
+        local delayColor = C.white
         if selected then
-            background, arrow = C.green, C.lime
+            background, edge, labelColor = C.green, C.lime, C.white
         elseif disabled then
-            background, arrow, labelColor = C.gray, C.lightGray, C.gray
+            background, edge, labelColor = C.gray, C.lightGray, C.lightGray
+            delayColor = C.gray
         elseif pulseSide == button.side then
-            background = C.cyan
+            background, edge = C.white, C.cyan
         end
-        fill(button.x, button.y, button.w, button.bodyH, background)
-        for row, pattern in ipairs(shapes[button.side]) do
-            for col = 1, #pattern do
-                if string.sub(pattern, col, col) == "#" then
-                    local x = guiX(button.gx + 1 + col)
-                    local y = guiY(button.gy + row - 1)
-                    fill(x, y, guiX(button.gx + 2 + col) - x,
-                         guiY(button.gy + row) - y, arrow)
-                end
-            end
-        end
-        local name = string.upper(button.side) .. " " .. delays[button.side] .. "s"
-        writeAt(button.x + math.floor((button.w - #name) / 2), button.labelY,
-                name, labelColor, C.black)
-    end
+        fill(button.x, button.y, button.w, button.h, edge)
+        fill(button.x + 1, button.y + 1, button.w - 2, button.h - 2, background)
+        local labelY = button.labelTop and button.y + 1 or button.y + button.h - 2
+        buttonText(button, labelY, button.label, labelColor, background)
 
-    centered(guiY(11), locked and "AUTO" or "MANUAL", C.lightGray)
-    local state = pulseSide and "PULSE" or (active and "WAIT" or "READY")
-    centered(guiY(13), state, active and C.lime or C.white)
-    local hint = ""
-    if locked then
-        hint = active and "" or ""
+        local iconTop = button.labelTop and labelY + 1 or button.y + 1
+        local iconBottom = button.labelTop and button.y + button.h - 2 or labelY - 1
+        if button.bars then
+            local barY = button.labelTop and iconTop or iconBottom
+            -- An equals sign supplies the two motion strokes on legacy fonts.
+            buttonText(button, barY, "===", edge, background)
+            if button.labelTop then iconTop = iconTop + 1
+            else iconBottom = iconBottom - 1 end
+        end
+        local iconH = iconBottom - iconTop + 1
+        local iconW = math.min(button.w - 4, math.max(5, math.floor(iconH * 1.4)))
+        if button.arrow == "left" or button.arrow == "right" then
+            iconW = button.w - 4
+        end
+        drawArrow(button.x + math.floor((button.w - iconW) / 2), iconTop,
+                  iconW, iconH, button.arrow, edge)
+        buttonText(button, button.delayRow, delays[button.side] .. " sec",
+                   delayColor, C.black)
     end
-    centered(guiY(23), hint, C.lightGray)
 end
 
 local function startPulse(side)
     outputsOff()
     pulseSide = side
-    redstone.setOutput(side, true)
+    redstone.setAnalogOutput(OUTPUT_SIDE, commands[side])
     offTimer = os.startTimer(PULSE_TIME)
 end
 
@@ -259,7 +325,7 @@ local function handleTouch(x, y)
                     stopMotion()
                     saveState()
                 elseif active then
-                    return -- The other three arrows are disabled.
+                    return -- The other five arrows are disabled.
                 else
                     active = button.side
                     saveState()
@@ -276,6 +342,11 @@ local function handleTouch(x, y)
 end
 
 local function main()
+    local validOutput = false
+    for _, side in ipairs(sides) do
+        if side == OUTPUT_SIDE then validOutput = true end
+    end
+    if not validOutput then error("Invalid OUTPUT_SIDE setting.", 0) end
     loadState()
     findMonitor()
     fitMonitor()
@@ -291,6 +362,7 @@ local function main()
     end
     draw()
     print("Movement controls: " .. monitorName)
+    print("PRC output: " .. OUTPUT_SIDE .. " (strengths 1-6, 0 = off)")
     print("Right-click the monitor buttons.")
     print("Hold Ctrl+T here to stop and exit.")
 
@@ -318,7 +390,7 @@ local function main()
             end
         elseif event == "monitor_resize" and a == monitorName then
             local newWidth, newHeight = monitor.getSize()
-            -- fitMonitor queues resize events while selecting its scale.
+            -- Applying text scale can queue a resize event.
             -- Ignore those if we already drew the monitor's final size.
             if newWidth ~= width or newHeight ~= height then
                 stopMotion()
@@ -351,7 +423,7 @@ if monitor then
     end)
 end
 if ok then
-    print("Stopped. All four outputs are off.")
+    print("Stopped. All outputs are off.")
 else
     print("Stopped: " .. tostring(message))
 end
