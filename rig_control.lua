@@ -5,7 +5,7 @@
 -- are configured on the cables, not in this program.
 
 local args = { ... }
-local PULSE_TIME = 0.1
+local PULSE_TIME = 0.5
 local delays = { front = 6, back = 6, left = 2, right = 2 }
 -- These delays are OFF time after each pulse in Lock mode.
 local sides = { "front", "back", "left", "right" }
