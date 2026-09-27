@@ -1,5 +1,5 @@
 -- SIX-DIRECTION PRC VERSION: Forward, Back, Left, Right, Up, Down.
--- Layout v2: larger equal-size buttons and an evenly spaced movement cross.
+-- Layout v3: aligned controls, exact centring, and symmetrical filled arrows.
 -- Touchscreen movement controls for ComputerCraft on Minecraft 1.6.4.
 -- Run: rig_control.lua [monitor side or wired peripheral name]
 -- This complete program can also be saved as /startup.
@@ -24,7 +24,7 @@ local C = colors
 local monitor, monitorName
 local width, height, originX, originY
 local guiScale = 1
-local buttons, lockButton = {}, nil
+local buttons, lockButton, configButton = {}, nil, nil
 local layoutOK = false
 local locked, active, pulseSide = false, nil, nil
 local offTimer, repeatTimer = nil, nil
@@ -120,33 +120,40 @@ end
 local function updateLayout()
     width, height = monitor.getSize()
     layoutOK = width >= BASE_WIDTH and height >= BASE_HEIGHT
-    buttons, lockButton = {}, nil
+    buttons, lockButton, configButton = {}, nil, nil
     if not layoutOK then return end
     guiScale = math.min(width / BASE_WIDTH, height / BASE_HEIGHT)
     -- Round each shared measurement once so all six boxes stay identical.
     local buttonWidth = math.floor(14 * guiScale)
+    -- Match the screen's odd/even width so centring never rounds left.
+    buttonWidth = buttonWidth + (width - buttonWidth) % 2
     local buttonHeight = math.floor(9 * guiScale)
     -- Columns are narrower than rows. This pitch keeps the cross balanced.
     local spacingUnit = math.floor(6 * guiScale)
     local stepX, stepY = 3 * spacingUnit, 2 * spacingUnit
-    local sideOffset = stepX + math.floor(3 * guiScale)
     local labelGap = 0
     local modeWidth = math.floor(20 * guiScale)
+    modeWidth = modeWidth + (width - modeWidth) % 2
     local modeHeight = math.max(3, math.floor(3 * guiScale))
     local modeGap = math.max(1, math.floor(guiScale))
     local totalHeight = modeHeight + modeGap + 2 * stepY +
                         buttonHeight + labelGap + 1
-    originX = math.floor((width - buttonWidth) / 2) + 1
+    local centerX = (width + 1) / 2
+    originX = centerX - (buttonWidth - 1) / 2
     originY = math.floor((height - totalHeight) / 2) + 1
     lockButton = {
-        x = math.floor((width - modeWidth) / 2) + 1, y = originY,
+        x = centerX - (modeWidth - 1) / 2, y = originY,
         w = modeWidth, h = modeHeight
     }
     local middleY = originY + modeHeight + modeGap + stepY
-    -- Four equal arms around the centre. Up and Down mirror one another,
-    -- aligned with Forward/Back but farther out than Left/Right.
+    configButton = {
+        x = 1, y = height - modeHeight + 1,
+        w = modeWidth, h = modeHeight
+    }
+    -- Shared columns: Up/Left, Forward/Back, and Right/Down.
+    -- Shared rows: Up/Forward, Left/Right, and Back/Down.
     buttons = {
-        { side="up", label="Up", dx=-sideOffset, dy=-stepY,
+        { side="up", label="Up", dx=-stepX, dy=-stepY,
           arrow="up", bars=true },
         { side="front", label="Forward", dx=0, dy=-stepY,
           arrow="up" },
@@ -156,7 +163,7 @@ local function updateLayout()
           arrow="right" },
         { side="back", label="Back", dx=0, dy=stepY,
           arrow="down", labelTop=true },
-        { side="down", label="Down", dx=sideOffset, dy=stepY,
+        { side="down", label="Down", dx=stepX, dy=stepY,
           arrow="down", labelTop=true, bars=true }
     }
     for _, button in ipairs(buttons) do
@@ -191,56 +198,32 @@ local function centered(y, text, foreground)
             text, foreground, C.black)
 end
 
-local function drawLine(x1, y1, x2, y2, color)
-    local dx, dy = math.abs(x2 - x1), -math.abs(y2 - y1)
-    local sx, sy = x1 < x2 and 1 or -1, y1 < y2 and 1 or -1
-    local err = dx + dy
-    while true do
-        writeAt(x1, y1, " ", color, color)
-        if x1 == x2 and y1 == y2 then return end
-        local twice = 2 * err
-        if twice >= dy then err = err + dy; x1 = x1 + sx end
-        if twice <= dx then err = err + dx; y1 = y1 + sy end
-    end
-end
-
 local function drawArrow(x, y, w, h, direction, color)
-    -- Filled arrow with a broad head and a narrower shaft.
-    local outline = { {3,0}, {6,3}, {4,3}, {4,6}, {2,6}, {2,3}, {0,3} }
-    local points = {}
-    for _, point in ipairs(outline) do
-        local u, v = point[1], point[2]
-        if direction == "down" then v = 6 - v
-        elseif direction == "left" then u, v = v, u
-        elseif direction == "right" then u, v = 6 - v, u end
-        points[#points + 1] = {
-            x + math.floor(u * (w - 1) / 6 + 0.5),
-            y + math.floor(v * (h - 1) / 6 + 0.5)
-        }
-    end
-    -- Fill polygon scan lines, then draw the edge to include the tip.
-    for row = y, y + h - 1 do
-        local crossings = {}
-        for i, point in ipairs(points) do
-            local nextPoint = points[i % #points + 1]
-            if (point[2] <= row and nextPoint[2] > row) or
-               (nextPoint[2] <= row and point[2] > row) then
-                crossings[#crossings + 1] = point[1] +
-                    (row - point[2]) * (nextPoint[1] - point[1]) /
-                    (nextPoint[2] - point[2])
-            end
+    -- Draw mirrored spans instead of rounding polygon edges independently.
+    -- Even widths have a two-cell tip; odd widths have a one-cell tip.
+    local vertical = direction == "up" or direction == "down"
+    local length = vertical and h or w
+    local thickness = vertical and w or h
+    local tipWidth = thickness % 2 == 0 and 2 or 1
+    local pairs = (thickness - tipWidth) / 2
+    local shaftPairs = math.floor(pairs / 3)
+    local headLength = math.max(2, math.ceil(length * 0.55))
+    for row = 0, length - 1 do
+        local halfSpan = shaftPairs
+        if row < headLength then
+            halfSpan = math.floor(pairs * row / (headLength - 1) + 0.5)
         end
-        table.sort(crossings)
-        for i = 1, #crossings - 1, 2 do
-            local first, last = math.ceil(crossings[i]), math.floor(crossings[i + 1])
-            if last >= first then
-                writeAt(first, row, string.rep(" ", last - first + 1), color, color)
-            end
+        local span = tipWidth + 2 * halfSpan
+        local inset = (thickness - span) / 2
+        local along = row
+        if direction == "down" or direction == "right" then
+            along = length - row - 1
         end
-    end
-    for i, point in ipairs(points) do
-        local nextPoint = points[i % #points + 1]
-        drawLine(point[1], point[2], nextPoint[1], nextPoint[2], color)
+        if vertical then
+            fill(x + inset, y + along, span, 1, color)
+        else
+            fill(x + along, y + inset, 1, span, color)
+        end
     end
 end
 
@@ -264,6 +247,9 @@ local function draw()
     fill(lockButton.x, lockButton.y, lockButton.w, lockButton.h, lockColor)
     buttonText(lockButton, lockButton.y + math.floor(lockButton.h / 2),
                locked and "Auto" or "Manual", C.black, lockColor)
+    fill(configButton.x, configButton.y, configButton.w, configButton.h, C.yellow)
+    buttonText(configButton, configButton.y + math.floor(configButton.h / 2),
+               "Config", C.black, C.yellow)
 
     for _, button in ipairs(buttons) do
         local selected = active == button.side
@@ -297,7 +283,9 @@ local function draw()
         if button.arrow == "left" or button.arrow == "right" then
             iconW = button.w - 4
         end
-        drawArrow(button.x + math.floor((button.w - iconW) / 2), iconTop,
+        -- Match odd/even widths to centre each icon exactly inside its box.
+        if (button.w - iconW) % 2 ~= 0 then iconW = iconW - 1 end
+        drawArrow(button.x + (button.w - iconW) / 2, iconTop,
                   iconW, iconH, button.arrow, edge)
         buttonText(button, button.delayRow, delays[button.side] .. " sec",
                    delayColor, C.black)
@@ -318,6 +306,9 @@ end
 
 local function handleTouch(x, y)
     if not layoutOK then return end
+    if inside(x, y, configButton) then
+        return -- Placeholder for future per-direction timing settings.
+    end
     if inside(x, y, lockButton) then
         stopMotion()
         locked = not locked
