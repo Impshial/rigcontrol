@@ -51,6 +51,8 @@ local function saveState()
         return
     end
 
+    
+
     -- Close the new file before replacing the previous state. This must finish
     -- before powering an output, since that output can reboot the computer.
     local file = fs.open(temporary, "w")
