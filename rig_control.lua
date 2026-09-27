@@ -1,5 +1,5 @@
 -- SIX-DIRECTION PRC VERSION: Forward, Back, Left, Right, Up, Down.
--- Layout v3: aligned controls, exact centring, and symmetrical filled arrows.
+-- Layout v4: large U/D/L/R letters and a compact Config button with feedback.
 -- Touchscreen movement controls for ComputerCraft on Minecraft 1.6.4.
 -- Run: rig_control.lua [monitor side or wired peripheral name]
 -- This complete program can also be saved as /startup.
@@ -11,6 +11,8 @@
 local args = { ... }
 local OUTPUT_SIDE = "back" -- The one computer face wired to the PRC.
 local PULSE_TIME = 0.5
+local CONFIG_WIDTH = 15 -- One standalone monitor at text scale 0.5.
+local CONFIG_FLASH_TIME = 0.25
 local STATE_VERSION = "rig-control-prc-v1"
 local BASE_WIDTH, BASE_HEIGHT = 56, 38
 local commands = { front = 1, back = 2, left = 3, right = 4, up = 5, down = 6 }
@@ -28,6 +30,13 @@ local buttons, lockButton, configButton = {}, nil, nil
 local layoutOK = false
 local locked, active, pulseSide = false, nil, nil
 local offTimer, repeatTimer = nil, nil
+local configTimer = nil
+local letterShapes = {
+    U = { "#   #", "#   #", "#   #", "#   #", "#   #", "#   #", " ### " },
+    D = { "#### ", "#   #", "#   #", "#   #", "#   #", "#   #", "#### " },
+    L = { "#    ", "#    ", "#    ", "#    ", "#    ", "#    ", "#####" },
+    R = { "#### ", "#   #", "#   #", "#### ", "# #  ", "#  # ", "#   #" }
+}
 
 local function outputsOff()
     for _, side in ipairs(sides) do
@@ -148,23 +157,23 @@ local function updateLayout()
     local middleY = originY + modeHeight + modeGap + stepY
     configButton = {
         x = 1, y = height - modeHeight + 1,
-        w = modeWidth, h = modeHeight
+        w = math.min(CONFIG_WIDTH, width), h = modeHeight
     }
     -- Shared columns: Up/Left, Forward/Back, and Right/Down.
     -- Shared rows: Up/Forward, Left/Right, and Back/Down.
     buttons = {
         { side="up", label="Up", dx=-stepX, dy=-stepY,
-          arrow="up", bars=true },
+          letter="U" },
         { side="front", label="Forward", dx=0, dy=-stepY,
           arrow="up" },
         { side="left", label="Left", dx=-stepX, dy=0,
-          arrow="left" },
+          letter="L" },
         { side="right", label="Right", dx=stepX, dy=0,
-          arrow="right" },
+          letter="R" },
         { side="back", label="Back", dx=0, dy=stepY,
           arrow="down", labelTop=true },
         { side="down", label="Down", dx=stepX, dy=stepY,
-          arrow="down", labelTop=true, bars=true }
+          letter="D" }
     }
     for _, button in ipairs(buttons) do
         button.x, button.y = originX + button.dx, middleY + button.dy
@@ -232,6 +241,32 @@ local function buttonText(button, y, text, foreground, background)
             text, foreground, background)
 end
 
+local function drawBigLetter(button, color)
+    local shape = letterShapes[button.letter]
+    local h = button.h - 2
+    local w = math.min(button.w - 4, math.max(5, math.floor(h * 1.2)))
+    -- Keep matching margins around the large character.
+    if (button.w - w) % 2 ~= 0 then w = w - 1 end
+    local x, y = button.x + (button.w - w) / 2, button.y + 1
+    for row = 0, h - 1 do
+        local pattern = shape[math.floor((row + 0.5) * #shape / h) + 1]
+        local run = nil
+        for column = 0, w do
+            local ink = false
+            if column < w then
+                local sourceColumn = math.floor((column + 0.5) * #pattern / w) + 1
+                ink = string.sub(pattern, sourceColumn, sourceColumn) == "#"
+            end
+            if ink and not run then
+                run = column
+            elseif not ink and run then
+                fill(x + run, y + row, column - run, 1, color)
+                run = nil
+            end
+        end
+    end
+end
+
 local function draw()
     monitor.setBackgroundColor(C.black)
     monitor.setTextColor(C.white)
@@ -247,9 +282,10 @@ local function draw()
     fill(lockButton.x, lockButton.y, lockButton.w, lockButton.h, lockColor)
     buttonText(lockButton, lockButton.y + math.floor(lockButton.h / 2),
                locked and "Auto" or "Manual", C.black, lockColor)
-    fill(configButton.x, configButton.y, configButton.w, configButton.h, C.yellow)
+    local configColor = configTimer and C.white or C.yellow
+    fill(configButton.x, configButton.y, configButton.w, configButton.h, configColor)
     buttonText(configButton, configButton.y + math.floor(configButton.h / 2),
-               "Config", C.black, C.yellow)
+               "Config", C.black, configColor)
 
     for _, button in ipairs(buttons) do
         local selected = active == button.side
@@ -266,27 +302,19 @@ local function draw()
         end
         fill(button.x, button.y, button.w, button.h, edge)
         fill(button.x + 1, button.y + 1, button.w - 2, button.h - 2, background)
-        local labelY = button.labelTop and button.y + 1 or button.y + button.h - 2
-        buttonText(button, labelY, button.label, labelColor, background)
-
-        local iconTop = button.labelTop and labelY + 1 or button.y + 1
-        local iconBottom = button.labelTop and button.y + button.h - 2 or labelY - 1
-        if button.bars then
-            local barY = button.labelTop and iconTop or iconBottom
-            -- An equals sign supplies the two motion strokes on legacy fonts.
-            buttonText(button, barY, "===", edge, background)
-            if button.labelTop then iconTop = iconTop + 1
-            else iconBottom = iconBottom - 1 end
+        if button.letter then
+            drawBigLetter(button, labelColor)
+        else
+            local labelY = button.labelTop and button.y + 1 or button.y + button.h - 2
+            buttonText(button, labelY, button.label, labelColor, background)
+            local iconTop = button.labelTop and labelY + 1 or button.y + 1
+            local iconBottom = button.labelTop and button.y + button.h - 2 or labelY - 1
+            local iconH = iconBottom - iconTop + 1
+            local iconW = math.min(button.w - 4, math.max(5, math.floor(iconH * 1.4)))
+            if (button.w - iconW) % 2 ~= 0 then iconW = iconW - 1 end
+            drawArrow(button.x + (button.w - iconW) / 2, iconTop,
+                      iconW, iconH, button.arrow, edge)
         end
-        local iconH = iconBottom - iconTop + 1
-        local iconW = math.min(button.w - 4, math.max(5, math.floor(iconH * 1.4)))
-        if button.arrow == "left" or button.arrow == "right" then
-            iconW = button.w - 4
-        end
-        -- Match odd/even widths to centre each icon exactly inside its box.
-        if (button.w - iconW) % 2 ~= 0 then iconW = iconW - 1 end
-        drawArrow(button.x + (button.w - iconW) / 2, iconTop,
-                  iconW, iconH, button.arrow, edge)
         buttonText(button, button.delayRow, delays[button.side] .. " sec",
                    delayColor, C.black)
     end
@@ -307,7 +335,9 @@ end
 local function handleTouch(x, y)
     if not layoutOK then return end
     if inside(x, y, configButton) then
-        return -- Placeholder for future per-direction timing settings.
+        configTimer = os.startTimer(CONFIG_FLASH_TIME)
+        draw()
+        return -- Feedback only; timing settings will be added later.
     end
     if inside(x, y, lockButton) then
         stopMotion()
@@ -371,7 +401,10 @@ local function main()
         elseif event == "monitor_touch" and a == monitorName then
             handleTouch(b, c)
         elseif event == "timer" then
-            if a == offTimer then
+            if a == configTimer then
+                configTimer = nil
+                draw()
+            elseif a == offTimer then
                 offTimer = nil
                 outputsOff()
                 pulseSide = nil
