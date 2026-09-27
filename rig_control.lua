@@ -1,4 +1,5 @@
 -- SIX-DIRECTION PRC VERSION: Forward, Back, Left, Right, Up, Down.
+-- Layout v2: larger equal-size buttons and an evenly spaced movement cross.
 -- Touchscreen movement controls for ComputerCraft on Minecraft 1.6.4.
 -- Run: rig_control.lua [monitor side or wired peripheral name]
 -- This complete program can also be saved as /startup.
@@ -11,7 +12,7 @@ local args = { ... }
 local OUTPUT_SIDE = "back" -- The one computer face wired to the PRC.
 local PULSE_TIME = 0.5
 local STATE_VERSION = "rig-control-prc-v1"
-local BASE_WIDTH, BASE_HEIGHT = 41, 37
+local BASE_WIDTH, BASE_HEIGHT = 56, 38
 local commands = { front = 1, back = 2, left = 3, right = 4, up = 5, down = 6 }
 -- Absolute path so recovery also works when this program is named startup.
 local STATE_FILE = "/rig_control.state"
@@ -116,46 +117,52 @@ local function findMonitor()
     end
 end
 
-local function guiX(x)
-    return originX + math.floor(x * guiScale)
-end
-
-local function guiY(y)
-    return originY + math.floor(y * guiScale)
-end
-
 local function updateLayout()
     width, height = monitor.getSize()
     layoutOK = width >= BASE_WIDTH and height >= BASE_HEIGHT
     buttons, lockButton = {}, nil
     if not layoutOK then return end
     guiScale = math.min(width / BASE_WIDTH, height / BASE_HEIGHT)
-    originX = math.floor((width - math.floor(BASE_WIDTH * guiScale)) / 2) + 1
-    originY = math.floor((height - math.floor(BASE_HEIGHT * guiScale)) / 2) + 1
+    -- Round each shared measurement once so all six boxes stay identical.
+    local buttonWidth = math.floor(14 * guiScale)
+    local buttonHeight = math.floor(9 * guiScale)
+    -- Columns are narrower than rows. This pitch keeps the cross balanced.
+    local spacingUnit = math.floor(6 * guiScale)
+    local stepX, stepY = 3 * spacingUnit, 2 * spacingUnit
+    local sideOffset = stepX + math.floor(3 * guiScale)
+    local labelGap = 0
+    local modeWidth = math.floor(20 * guiScale)
+    local modeHeight = math.max(3, math.floor(3 * guiScale))
+    local modeGap = math.max(1, math.floor(guiScale))
+    local totalHeight = modeHeight + modeGap + 2 * stepY +
+                        buttonHeight + labelGap + 1
+    originX = math.floor((width - buttonWidth) / 2) + 1
+    originY = math.floor((height - totalHeight) / 2) + 1
     lockButton = {
-        x = guiX(10), y = guiY(0),
-        w = guiX(29) - guiX(10), h = guiY(3) - guiY(0)
+        x = math.floor((width - modeWidth) / 2) + 1, y = originY,
+        w = modeWidth, h = modeHeight
     }
-    -- Reference layout: Up upper-left, Down lower-right, movement cross.
+    local middleY = originY + modeHeight + modeGap + stepY
+    -- Four equal arms around the centre. Up and Down mirror one another,
+    -- aligned with Forward/Back but farther out than Left/Right.
     buttons = {
-        { side="up", label="Up", gx=2, gy=6, gw=11, gh=8, delayY=15,
+        { side="up", label="Up", dx=-sideOffset, dy=-stepY,
           arrow="up", bars=true },
-        { side="front", label="Forward", gx=14, gy=8, gw=11, gh=8, delayY=17,
+        { side="front", label="Forward", dx=0, dy=-stepY,
           arrow="up" },
-        { side="left", label="Left", gx=2, gy=16, gw=11, gh=7, delayY=24,
+        { side="left", label="Left", dx=-stepX, dy=0,
           arrow="left" },
-        { side="right", label="Right", gx=26, gy=16, gw=12, gh=7, delayY=24,
+        { side="right", label="Right", dx=stepX, dy=0,
           arrow="right" },
-        { side="back", label="Back", gx=14, gy=24, gw=11, gh=9, delayY=34,
+        { side="back", label="Back", dx=0, dy=stepY,
           arrow="down", labelTop=true },
-        { side="down", label="Down", gx=28, gy=26, gw=11, gh=9, delayY=36,
+        { side="down", label="Down", dx=sideOffset, dy=stepY,
           arrow="down", labelTop=true, bars=true }
     }
     for _, button in ipairs(buttons) do
-        button.x, button.y = guiX(button.gx), guiY(button.gy)
-        button.w = guiX(button.gx + button.gw) - button.x
-        button.h = guiY(button.gy + button.gh) - button.y
-        button.delayRow = guiY(button.delayY)
+        button.x, button.y = originX + button.dx, middleY + button.dy
+        button.w, button.h = buttonWidth, buttonHeight
+        button.delayRow = button.y + buttonHeight + labelGap
     end
 end
 
