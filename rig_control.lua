@@ -161,7 +161,7 @@ local function draw()
                 name, labelColor, C.black)
     end
 
-    centered(originY + 11, locked and "LOCKED" or "MANUAL", C.lightGray)
+    centered(originY + 11, locked and "AUTO" or "MANUAL", C.lightGray)
     local state = pulseSide and "PULSE" or (active and "WAIT" or "READY")
     centered(originY + 13, state, active and C.lime or C.white)
     local hint = "Click an arrow for one pulse"
